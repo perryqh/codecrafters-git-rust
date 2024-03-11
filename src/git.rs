@@ -1,11 +1,37 @@
-use std::{fs, io::{BufRead, Read}, path::PathBuf};
+use std::{
+    fs::{self, metadata, File},
+    io::{copy, BufRead, Read, Write},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{bail, ensure, Context};
+use flate2::write::ZlibEncoder;
+use sha1::{Digest, Sha1};
 
 pub struct Git<W: std::io::Write, X: std::io::Write> {
     pub writer: W,
     pub error_writer: X,
     pub root: std::path::PathBuf,
+}
+
+struct HashWriter<W: std::io::Write> {
+    writer: W,
+    hasher: Sha1,
+}
+
+impl<W> std::io::Write for HashWriter<W>
+where
+    W: std::io::Write,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.writer.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 impl Default for Git<std::io::Stdout, std::io::Stderr> {
@@ -37,6 +63,43 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
     }
 
     pub fn hash_object(&mut self, write: &bool, file: &PathBuf) -> anyhow::Result<()> {
+        fn write_blob<W>(file: &Path, writer: W) -> anyhow::Result<String>
+        where
+            W: Write,
+        {
+            let stat = metadata(file).context("cannot stat file")?;
+            let writer = ZlibEncoder::new(writer, flate2::Compression::default());
+            let mut writer = HashWriter {
+                writer,
+                hasher: Sha1::new(),
+            };
+            write!(writer, "blob {}\0", stat.len())?;
+            let mut file = File::open(file).context("cannot open file")?;
+            copy(&mut file, &mut writer).context("stream file into blob")?;
+            let _ = writer.writer.finish()?;
+            let hash = writer.hasher.finalize();
+            Ok(hex::encode(hash))
+        }
+        let hash = if *write {
+            let tmp = "temporary";
+            let hash = write_blob(
+                &file,
+                File::create(tmp).context("cannot create temporary file")?,
+            )
+            .context("cannot write blob")?;
+            fs::create_dir_all(self.root.join(".git/objects").join(&hash[..2]))?;
+            fs::rename(
+                tmp,
+                self.root
+                    .join(".git/objects")
+                    .join(&hash[..2])
+                    .join(&hash[2..]),
+            )?;
+            hash
+        } else {
+            write_blob(&file, std::io::sink()).context("cannot write blob to sink")?
+        };
+        write!(self.writer, "{hash}", hash = hash)?;
         Ok(())
     }
 
@@ -45,11 +108,13 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
             ".git/objects/{}/{}",
             &object_hash[..2],
             &object_hash[2..]
-        ))).context("cannot find file for {object_hash}")?;
+        )))
+        .context("cannot find file for {object_hash}")?;
         let z = flate2::read::ZlibDecoder::new(file);
         let mut z = std::io::BufReader::new(z);
         let mut buffer = Vec::new();
-        z.read_until(0, &mut buffer).context("error read until in cat file")?;
+        z.read_until(0, &mut buffer)
+            .context("error read until in cat file")?;
         let header = std::ffi::CStr::from_bytes_with_nul(&buffer)
             .context("Failed to read bytes with nul")?
             .to_str()
@@ -61,7 +126,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
                 header
             );
         };
-        let object_type = match kind {
+        let _object_type = match kind {
             "blob" => ObjectType::Blob,
             "commit" => ObjectType::Commit,
             _ => bail!("Unknown object type: '{}'", kind),
@@ -87,10 +152,10 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
 mod tests {
     use std::io::Write;
 
+    use flate2::read::ZlibDecoder;
+    use flate2::{write::ZlibEncoder, Compression};
     use sha1::{Digest, Sha1};
     use tempfile::tempdir;
-    use flate2::{write::ZlibEncoder, Compression};
-    use flate2::read::ZlibDecoder;
 
     use super::*;
 
@@ -136,14 +201,19 @@ mod tests {
         assert_eq!(compressed_bytes.len(), 27);
 
         fs::create_dir_all(temp_dir.path().join(".git/objects/").join(&hash[..2]))?;
-        let file_path = temp_dir.path().join(".git/objects/").join(&hash[..2]).join(&hash[2..]);
+        let file_path = temp_dir
+            .path()
+            .join(".git/objects/")
+            .join(&hash[..2])
+            .join(&hash[2..]);
         fs::write(&file_path, compressed_bytes).context("error writing {file_path}")?;
 
         let file = fs::File::open(&file_path).context("error opening file")?;
         let z = ZlibDecoder::new(file);
         let mut z = std::io::BufReader::new(z);
         let mut buffer = Vec::new();
-        z.read_until(0, &mut buffer).context("sanity 33read until in cat file")?;
+        z.read_until(0, &mut buffer)
+            .context("sanity 33read until in cat file")?;
         dbg!(&buffer);
 
         let writer = Vec::new();
@@ -153,9 +223,18 @@ mod tests {
             error_writer,
             root: temp_dir.path().to_path_buf(),
         };
-        git.cat_file(&true, &hash).context("unable to cat the file")?;
+        git.cat_file(&true, &hash)
+            .context("unable to cat the file")?;
         let result_string = String::from_utf8(git.writer).expect("Found invalid UTF-8");
         assert_eq!(result_string, "hello world");
+        Ok(())
+    }
+
+    #[test]
+    fn test_hash_object() -> anyhow::Result<()> {
+        let temp_dir = tempdir()?;
+        let file_contents = b"hello world";
+        let file_path = temp_dir.path().join("hello.txt");
         Ok(())
     }
 }
