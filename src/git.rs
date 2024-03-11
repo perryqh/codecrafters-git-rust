@@ -188,25 +188,9 @@ mod tests {
 
     #[test]
     fn test_cat_file() -> anyhow::Result<()> {
-        let temp_dir = tempdir()?;
         let file_contents = b"blob 11\0hello world";
-        let mut hasher = Sha1::new();
-        hasher.update(file_contents);
-        let result = hasher.finalize();
-        let hash = format!("{:x}", result);
-
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(file_contents)?;
-        let compressed_bytes = encoder.finish()?;
-        assert_eq!(compressed_bytes.len(), 27);
-
-        fs::create_dir_all(temp_dir.path().join(".git/objects/").join(&hash[..2]))?;
-        let file_path = temp_dir
-            .path()
-            .join(".git/objects/")
-            .join(&hash[..2])
-            .join(&hash[2..]);
-        fs::write(&file_path, compressed_bytes).context("error writing {file_path}")?;
+        let git = build_test_git()?;
+        let (hash, file_path) = write_to_git_objects(&git, file_contents)?;
 
         let file = fs::File::open(&file_path).context("error opening file")?;
         let z = ZlibDecoder::new(file);
@@ -221,7 +205,7 @@ mod tests {
         let mut git = Git {
             writer,
             error_writer,
-            root: temp_dir.path().to_path_buf(),
+            root: git.root.as_path().to_path_buf(),
         };
         git.cat_file(&true, &hash)
             .context("unable to cat the file")?;
@@ -279,6 +263,61 @@ mod tests {
         assert_eq!(content, file_contents);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_ls_tree() -> anyhow::Result<()> {
+        // 100644 blob abafc304b7280dac41f0949acc30eeb6a7a70eb4	README.md
+        // 040000 tree dc521eaed6e6b7ba3513b32713539d1fe44c5a26	ai-assistant
+        // 040000 tree 12ce3a605dcfd1cd80cae6b1df63ed29ac44a25b	app-apis
+        // 040000 tree 18caae42a9b3147a3d9083631b5d7ca9022cbf91	app-benefits-apis
+        //
+        //   tree <size>\0
+        //   <mode> <name>\0<20_byte_sha>
+        //   <mode> <name>\0<20_byte_sha>
+        let file_contents = b"tree 239\0100644 README.md\0abafc304b7280dac41f0949acc30eeb6a7a70eb4040000 ai-assistant\0dc521eaed6e6b7ba3513b32713539d1fe44c5a26040000 app-apis\012ce3a605dcfd1cd80cae6b1df63ed29ac44a25b040000 app-benefits-apis\018caae42a9b3147a3d9083631b5d7ca9022cbf91";
+        let git = build_test_git()?;
+        write_to_git_objects(&git, file_contents)?;
+
+        Ok(())
+    }
+
+    type TestGit = Git<Vec<u8>, Vec<u8>>;
+
+    fn write_to_git_objects(
+        git: &TestGit,
+        file_contents: &[u8],
+    ) -> anyhow::Result<((String, PathBuf))> {
+        let mut hasher = Sha1::new();
+        hasher.update(file_contents);
+        let result = hasher.finalize();
+        let hash = format!("{:x}", result);
+
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(file_contents)?;
+        let compressed_bytes = encoder.finish()?;
+
+        fs::create_dir_all(git.root.as_path().join(".git/objects/").join(&hash[..2]))?;
+        let file_path = git
+            .root
+            .as_path()
+            .join(".git/objects/")
+            .join(&hash[..2])
+            .join(&hash[2..]);
+        fs::write(&file_path, compressed_bytes).context("error writing {file_path}")?;
+
+        Ok((hash, file_path))
+    }
+
+    fn build_test_git() -> anyhow::Result<TestGit> {
+        let temp_dir = tempdir()?;
+        let writer = Vec::new();
+        let error_writer = Vec::new();
+        Ok(Git {
+            writer,
+            error_writer,
+            root: temp_dir.path().to_path_buf(),
+        })
     }
 }
 
