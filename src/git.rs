@@ -233,9 +233,53 @@ mod tests {
     #[test]
     fn test_hash_object() -> anyhow::Result<()> {
         let temp_dir = tempdir()?;
-        let file_contents = b"hello world";
-        let file_path = temp_dir.path().join("hello.txt");
-        // https://youtu.be/u0VotuGzD_w?t=5935
+        let file_contents = b"hello world with some content";
+        let mut tmp_file = tempfile::NamedTempFile::new()?;
+        let tmp_file_path = tmp_file.path().to_path_buf();
+        tmp_file.write_all(file_contents)?;
+
+        let writer = Vec::new();
+        let error_writer = Vec::new();
+        let mut git = Git {
+            writer,
+            error_writer,
+            root: temp_dir.path().to_path_buf(),
+        };
+        git.hash_object(&true, &tmp_file_path)?;
+        let hash = String::from_utf8(git.writer).expect("Found invalid UTF-8");
+        let object_path = temp_dir
+            .path()
+            .join(".git/objects/")
+            .join(&hash[..2])
+            .join(&hash[2..]);
+        assert!(object_path.exists());
+
+        let file = fs::File::open(&object_path).context("error opening file")?;
+        let z = ZlibDecoder::new(file);
+        let mut z = std::io::BufReader::new(z);
+        let mut buffer = Vec::new();
+        z.read_until(0, &mut buffer)
+            .context("read until in cat file")?;
+        let header = std::ffi::CStr::from_bytes_with_nul(&buffer)
+            .context("Failed to read bytes with nul")?
+            .to_str()
+            .context("Failed to parse object header")?;
+        let Some((kind, size)) = header.split_once(' ') else {
+            bail!(
+                ".git/objects file header did not start with a knonw type: '{}'",
+                header
+            );
+        };
+        assert_eq!(kind, "blob");
+        assert_eq!(size, "29");
+        let mut z = z.take(29);
+        let mut content = Vec::new();
+        z.read_to_end(&mut content)
+            .context("Failed to read to end of file")?;
+        assert_eq!(content, file_contents);
+
         Ok(())
     }
 }
+
+// https://youtu.be/u0VotuGzD_w?t=5935
