@@ -27,10 +27,18 @@ enum Command {
         write: bool,
         file: PathBuf,
     },
+    LsTree {
+        #[clap(short = 'n', long)]
+        name_only: bool,
+        #[clap(name = "tree-hash")]
+        tree_hash: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut git = Git::default();
+    let mut git = Git {
+        config: Default::default(),
+    };
     let args = Args::parse();
     match args.command {
         Command::Init => git.init(),
@@ -39,5 +47,9 @@ fn main() -> anyhow::Result<()> {
             object_hash,
         } => git.cat_file(&pretty_print, &object_hash),
         Command::HashObject { write, file } => git.hash_object(&write, &file),
+        Command::LsTree {
+            name_only,
+            tree_hash,
+        } => git.ls_tree(&name_only, &tree_hash),
     }
 }

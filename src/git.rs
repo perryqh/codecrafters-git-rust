@@ -1,174 +1,96 @@
-use std::{
-    fs::{self, metadata, File},
-    io::{copy, BufRead, Read, Write},
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use anyhow::{bail, ensure, Context};
-use flate2::write::ZlibEncoder;
-use sha1::{Digest, Sha1};
 
+use crate::{
+    config::Config,
+    object::{Object, ObjectType},
+    tree::build_tree,
+};
+#[derive(Debug)]
 pub struct Git<W: std::io::Write, X: std::io::Write> {
-    pub writer: W,
-    pub error_writer: X,
-    pub root: std::path::PathBuf,
-}
-
-struct HashWriter<W: std::io::Write> {
-    writer: W,
-    hasher: Sha1,
-}
-
-impl<W> std::io::Write for HashWriter<W>
-where
-    W: std::io::Write,
-{
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.writer.write(buf)?;
-        self.hasher.update(&buf[..n]);
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.flush()
-    }
-}
-
-impl Default for Git<std::io::Stdout, std::io::Stderr> {
-    fn default() -> Self {
-        Self {
-            writer: std::io::stdout(),
-            error_writer: std::io::stderr(),
-            root: std::env::current_dir().unwrap(),
-        }
-    }
-}
-
-enum ObjectType {
-    Blob,
-    // Tree,
-    Commit,
-    // Tag,
+    pub config: Config<W, X>,
 }
 
 impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
     pub fn init(&mut self) -> anyhow::Result<()> {
-        fs::create_dir(self.root.join(".git"))?;
-        fs::create_dir(self.root.join(".git/objects"))?;
-        fs::create_dir(self.root.join(".git/refs"))?;
-        fs::write(self.root.join(".git/HEAD"), "ref: refs/heads/master\n")?;
+        fs::create_dir(self.config.root.join(".git"))?;
+        fs::create_dir(self.config.root.join(".git/objects"))?;
+        fs::create_dir(self.config.root.join(".git/refs"))?;
+        fs::write(
+            self.config.root.join(".git/HEAD"),
+            "ref: refs/heads/master\n",
+        )?;
 
-        write!(self.writer, "Initialized git directory\n")?;
+        write!(self.config.writer, "Initialized git directory\n")?;
         Ok(())
     }
 
     pub fn hash_object(&mut self, write: &bool, file: &PathBuf) -> anyhow::Result<()> {
-        fn write_blob<W>(file: &Path, writer: W) -> anyhow::Result<String>
-        where
-            W: Write,
-        {
-            let stat = metadata(file).context("cannot stat file")?;
-            let writer = ZlibEncoder::new(writer, flate2::Compression::default());
-            let mut writer = HashWriter {
-                writer,
-                hasher: Sha1::new(),
-            };
-            write!(writer, "blob {}\0", stat.len())?;
-            let mut file = File::open(file).context("cannot open file")?;
-            copy(&mut file, &mut writer).context("stream file into blob")?;
-            let _ = writer.writer.finish()?;
-            let hash = writer.hasher.finalize();
-            Ok(hex::encode(hash))
-        }
+        let object = Object::blob_from_file(file).context("open blob input file")?;
         let hash = if *write {
-            let tmp = "temporary";
-            let hash = write_blob(
-                &file,
-                File::create(tmp).context("cannot create temporary file")?,
-            )
-            .context("cannot write blob")?;
-            fs::create_dir_all(self.root.join(".git/objects").join(&hash[..2]))?;
-            fs::rename(
-                tmp,
-                self.root
-                    .join(".git/objects")
-                    .join(&hash[..2])
-                    .join(&hash[2..]),
-            )?;
-            hash
+            object
+                .write_to_objects(&self.config.root)
+                .context("stream file into blob object file")?
         } else {
-            write_blob(&file, std::io::sink()).context("cannot write blob to sink")?
+            object
+                .write(std::io::sink())
+                .context("stream file into blob object")?
         };
-        write!(self.writer, "{hash}", hash = hash)?;
+
+        write!(self.config.writer, "{}", hex::encode(hash))?;
+
         Ok(())
     }
 
     pub fn cat_file(&mut self, pretty_print: &bool, object_hash: &str) -> anyhow::Result<()> {
-        let file = fs::File::open(self.root.join(format!(
-            ".git/objects/{}/{}",
-            &object_hash[..2],
-            &object_hash[2..]
-        )))
-        .context("cannot find file for {object_hash}")?;
-        let z = flate2::read::ZlibDecoder::new(file);
-        let mut z = std::io::BufReader::new(z);
-        let mut buffer = Vec::new();
-        z.read_until(0, &mut buffer)
-            .context("error read until in cat file")?;
-        let header = std::ffi::CStr::from_bytes_with_nul(&buffer)
-            .context("Failed to read bytes with nul")?
-            .to_str()
-            .context("Failed to parse object header")?;
+        let mut object =
+            Object::read(&self.config.root, object_hash).context("parse out blob object file")?;
 
-        let Some((kind, size)) = header.split_once(' ') else {
-            bail!(
-                ".git/objects file header did not start with a knonw type: '{}'",
-                header
-            );
-        };
-        let _object_type = match kind {
-            "blob" => ObjectType::Blob,
-            "commit" => ObjectType::Commit,
-            _ => bail!("Unknown object type: '{}'", kind),
-        };
-        let size = size
-            .to_string()
-            .parse::<u64>()
-            .context(".git/objects file header has invalid size: {size}")?;
-        let mut z = z.take(size);
-        let n = std::io::copy(&mut z, &mut self.writer).context("Failed to write to stdout")?;
-        ensure!(
-            n == size as u64,
-            ".git/object file was not the expected size (expected: {}, actual: {})",
-            size,
-            n
-        );
+        match object.object_type {
+            ObjectType::Blob => {
+                let n = std::io::copy(&mut object.reader, &mut self.config.writer)
+                    .context("Failed to write to stdout")?;
+                ensure!(
+                    n == object.expected_size as u64,
+                    ".git/object file was not the expected size (expected: {}, actual: {})",
+                    object.expected_size,
+                    n
+                );
+            }
+            _ => bail!("object type not supported"),
+        }
+        Ok(())
+    }
 
+    pub fn ls_tree(&mut self, name_only: &bool, tree_sha: &str) -> anyhow::Result<()> {
+        let tree = build_tree(&self.config.root, tree_sha)?;
+        for entry in tree.entries {
+            write!(self.config.writer, "{}", &entry.name)?;
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
-    use flate2::read::ZlibDecoder;
-    use flate2::{write::ZlibEncoder, Compression};
-    use sha1::{Digest, Sha1};
-    use tempfile::tempdir;
-
     use super::*;
+    use crate::test::{build_test_git, write_to_git_objects};
+    use flate2::read::ZlibDecoder;
+    use std::io::{BufRead, Read, Write};
+    use tempfile::tempdir;
 
     #[test]
     fn test_init() -> anyhow::Result<()> {
         let temp_dir = tempdir()?;
         let writer = Vec::new();
         let error_writer = Vec::new();
-        let mut git = Git {
+        let config = Config {
             writer,
             error_writer,
             root: temp_dir.path().to_path_buf(),
         };
+        let mut git = Git { config };
         git.init()?;
         let git_dir = temp_dir.path().join(".git");
         assert!(git_dir.exists());
@@ -180,7 +102,7 @@ mod tests {
         assert!(head_file.exists());
         let head_contents = std::fs::read_to_string(head_file)?;
         assert_eq!(head_contents, "ref: refs/heads/master\n");
-        let result_string = String::from_utf8(git.writer).expect("Found invalid UTF-8");
+        let result_string = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
         assert_eq!(result_string, "Initialized git directory\n");
 
         Ok(())
@@ -202,14 +124,15 @@ mod tests {
 
         let writer = Vec::new();
         let error_writer = Vec::new();
-        let mut git = Git {
+        let config = Config {
             writer,
             error_writer,
-            root: git.root.as_path().to_path_buf(),
+            root: git.config.root.as_path().to_path_buf(),
         };
+        let mut git = Git { config };
         git.cat_file(&true, &hash)
             .context("unable to cat the file")?;
-        let result_string = String::from_utf8(git.writer).expect("Found invalid UTF-8");
+        let result_string = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
         assert_eq!(result_string, "hello world");
         Ok(())
     }
@@ -224,13 +147,14 @@ mod tests {
 
         let writer = Vec::new();
         let error_writer = Vec::new();
-        let mut git = Git {
+        let config = Config {
             writer,
             error_writer,
             root: temp_dir.path().to_path_buf(),
         };
+        let mut git = Git { config };
         git.hash_object(&true, &tmp_file_path)?;
-        let hash = String::from_utf8(git.writer).expect("Found invalid UTF-8");
+        let hash = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
         let object_path = temp_dir
             .path()
             .join(".git/objects/")
@@ -263,61 +187,6 @@ mod tests {
         assert_eq!(content, file_contents);
 
         Ok(())
-    }
-
-    #[test]
-    fn test_ls_tree() -> anyhow::Result<()> {
-        // 100644 blob abafc304b7280dac41f0949acc30eeb6a7a70eb4	README.md
-        // 040000 tree dc521eaed6e6b7ba3513b32713539d1fe44c5a26	ai-assistant
-        // 040000 tree 12ce3a605dcfd1cd80cae6b1df63ed29ac44a25b	app-apis
-        // 040000 tree 18caae42a9b3147a3d9083631b5d7ca9022cbf91	app-benefits-apis
-        //
-        //   tree <size>\0
-        //   <mode> <name>\0<20_byte_sha>
-        //   <mode> <name>\0<20_byte_sha>
-        let file_contents = b"tree 239\0100644 README.md\0abafc304b7280dac41f0949acc30eeb6a7a70eb4040000 ai-assistant\0dc521eaed6e6b7ba3513b32713539d1fe44c5a26040000 app-apis\012ce3a605dcfd1cd80cae6b1df63ed29ac44a25b040000 app-benefits-apis\018caae42a9b3147a3d9083631b5d7ca9022cbf91";
-        let git = build_test_git()?;
-        write_to_git_objects(&git, file_contents)?;
-
-        Ok(())
-    }
-
-    type TestGit = Git<Vec<u8>, Vec<u8>>;
-
-    fn write_to_git_objects(
-        git: &TestGit,
-        file_contents: &[u8],
-    ) -> anyhow::Result<((String, PathBuf))> {
-        let mut hasher = Sha1::new();
-        hasher.update(file_contents);
-        let result = hasher.finalize();
-        let hash = format!("{:x}", result);
-
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(file_contents)?;
-        let compressed_bytes = encoder.finish()?;
-
-        fs::create_dir_all(git.root.as_path().join(".git/objects/").join(&hash[..2]))?;
-        let file_path = git
-            .root
-            .as_path()
-            .join(".git/objects/")
-            .join(&hash[..2])
-            .join(&hash[2..]);
-        fs::write(&file_path, compressed_bytes).context("error writing {file_path}")?;
-
-        Ok((hash, file_path))
-    }
-
-    fn build_test_git() -> anyhow::Result<TestGit> {
-        let temp_dir = tempdir()?;
-        let writer = Vec::new();
-        let error_writer = Vec::new();
-        Ok(Git {
-            writer,
-            error_writer,
-            root: temp_dir.path().to_path_buf(),
-        })
     }
 }
 
