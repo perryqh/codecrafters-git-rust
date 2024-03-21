@@ -22,6 +22,17 @@ pub(crate) fn build_test_git() -> anyhow::Result<TestGit> {
     Ok(Git { config })
 }
 
+pub(crate) fn build_simple_app_git() -> anyhow::Result<TestGit> {
+    let writer = Vec::new();
+    let error_writer = Vec::new();
+    let config = Config {
+        writer,
+        error_writer,
+        dot_git_path: PathBuf::from("tests/fixtures/simple-app/dot-git"),
+    };
+    Ok(Git { config })
+}
+
 pub type TestGit = Git<Vec<u8>, Vec<u8>>;
 
 pub(crate) fn write_to_git_objects(

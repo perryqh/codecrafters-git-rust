@@ -52,7 +52,7 @@ impl From<&str> for TreeEntryMode {
             "100644" => TreeEntryMode::RegularFile,
             "100755" => TreeEntryMode::ExecutableFile,
             "120000" => TreeEntryMode::SymbolicLink,
-            "040000" => TreeEntryMode::Directory,
+            "040000" | "40000" => TreeEntryMode::Directory,
             _ => panic!("unknown tree entry mode `{value}`"),
         }
     }
@@ -121,60 +121,41 @@ pub(crate) fn build_tree(dot_git_path: &PathBuf, tree_hash: &str) -> anyhow::Res
 
 #[cfg(test)]
 mod tests {
-    use crate::test::{build_test_git, write_to_git_objects};
+    use crate::test::{build_simple_app_git, build_test_git, write_to_git_objects};
 
     use super::*;
 
     #[test]
     fn test_build_tree() -> anyhow::Result<()> {
-        // 100644 blob abafc304b7280dac41f0949acc30eeb6a7a70eb4	README.md
-        // 040000 tree dc521eaed6e6b7ba3513b32713539d1fe44c5a26	ai-assistant
-        // 040000 tree 12ce3a605dcfd1cd80cae6b1df63ed29ac44a25b	app-apis
-        // 040000 tree 18caae42a9b3147a3d9083631b5d7ca9022cbf91	app-benefits-apis
-        //
         //   tree <size>\0
         //   <mode> <name>\0<20_byte_sha>
         //   <mode> <name>\0<20_byte_sha>
-        let e1: Vec<u8> = [
-            b"0100644 README.md\0",
-            &hex::decode(b"abafc304b7280dac41f0949acc30eeb6a7a70eb4")?[..],
-        ]
-        .concat();
-        let file_contents = b"tree 239\0100644 README.md\0abafc304b7280dac41f0949acc30eeb6a7a70eb4040000 ai-assistant\0dc521eaed6e6b7ba3513b32713539d1fe44c5a26040000 app-apis\012ce3a605dcfd1cd80cae6b1df63ed29ac44a25b040000 app-benefits-apis\018caae42a9b3147a3d9083631b5d7ca9022cbf91";
-        let mut git = build_test_git()?;
-        let (tree_sha, _file_path) = write_to_git_objects(&git, file_contents)?;
+        let git = build_simple_app_git()?;
+        let tree_sha = String::from("825ad6339808aa69dd0b2d487586a32fe4b6be17");
         let tree = build_tree(&git.config.dot_git_path, &tree_sha)?;
-        assert_eq!(tree.entries.len(), 4);
+        assert_eq!(tree.entries.len(), 3);
         assert_eq!(
             tree.entries[0],
             TreeEntry {
                 mode: TreeEntryMode::RegularFile,
-                name: String::from("README.md"),
-                sha: String::from("abafc304b7280dac41f0949acc30eeb6a7a70eb4"),
+                name: String::from(".gitignore"),
+                sha: String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba"),
             }
         );
         assert_eq!(
             tree.entries[1],
             TreeEntry {
-                mode: TreeEntryMode::Directory,
-                name: String::from("ai-assistant"),
-                sha: String::from("dc521eaed6e6b7ba3513b32713539d1fe44c5a26"),
+                mode: TreeEntryMode::RegularFile,
+                name: String::from("Cargo.toml"),
+                sha: String::from("f195397afef8ad7a138507d1cf1c118d6e0d6dfc"),
             }
         );
         assert_eq!(
             tree.entries[2],
             TreeEntry {
                 mode: TreeEntryMode::Directory,
-                name: String::from("ai-assistant"),
-                sha: String::from("12ce3a605dcfd1cd80cae6b1df63ed29ac44a25b"),
-            }
-        );
-        assert_eq!(
-            tree.entries[3],
-            TreeEntry {
-                mode: TreeEntryMode::Directory,
-                name: String::from("ai-assistant"),
-                sha: String::from("18caae42a9b3147a3d9083631b5d7ca9022cbf91"),
+                name: String::from("src"),
+                sha: String::from("305157a396c6858705a9cb625bab219053264ee4"),
             }
         );
         Ok(())
