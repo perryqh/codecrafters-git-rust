@@ -14,11 +14,11 @@ pub struct Git<W: std::io::Write, X: std::io::Write> {
 
 impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
     pub fn init(&mut self) -> anyhow::Result<()> {
-        fs::create_dir(self.config.root.join(".git"))?;
-        fs::create_dir(self.config.root.join(".git/objects"))?;
-        fs::create_dir(self.config.root.join(".git/refs"))?;
+        fs::create_dir(&self.config.dot_git_path)?;
+        fs::create_dir(self.config.dot_git_path.join("objects"))?;
+        fs::create_dir(self.config.dot_git_path.join("refs"))?;
         fs::write(
-            self.config.root.join(".git/HEAD"),
+            self.config.dot_git_path.join("HEAD"),
             "ref: refs/heads/master\n",
         )?;
 
@@ -30,7 +30,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         let object = Object::blob_from_file(file).context("open blob input file")?;
         let hash = if *write {
             object
-                .write_to_objects(&self.config.root)
+                .write_to_objects(&self.config.dot_git_path)
                 .context("stream file into blob object file")?
         } else {
             object
@@ -44,8 +44,8 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
     }
 
     pub fn cat_file(&mut self, pretty_print: &bool, object_hash: &str) -> anyhow::Result<()> {
-        let mut object =
-            Object::read(&self.config.root, object_hash).context("parse out blob object file")?;
+        let mut object = Object::read(&self.config.dot_git_path, object_hash)
+            .context("parse out blob object file")?;
 
         match object.object_type {
             ObjectType::Blob => {
@@ -64,7 +64,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
     }
 
     pub fn ls_tree(&mut self, name_only: &bool, tree_sha: &str) -> anyhow::Result<()> {
-        let tree = build_tree(&self.config.root, tree_sha)?;
+        let tree = build_tree(&self.config.dot_git_path, tree_sha)?;
         for entry in tree.entries {
             write!(self.config.writer, "{}", &entry.name)?;
         }
@@ -88,7 +88,7 @@ mod tests {
         let config = Config {
             writer,
             error_writer,
-            root: temp_dir.path().to_path_buf(),
+            dot_git_path: temp_dir.path().to_path_buf().join(".git"),
         };
         let mut git = Git { config };
         git.init()?;
@@ -127,7 +127,7 @@ mod tests {
         let config = Config {
             writer,
             error_writer,
-            root: git.config.root.as_path().to_path_buf(),
+            dot_git_path: git.config.dot_git_path.as_path().to_path_buf(),
         };
         let mut git = Git { config };
         git.cat_file(&true, &hash)
@@ -150,8 +150,9 @@ mod tests {
         let config = Config {
             writer,
             error_writer,
-            root: temp_dir.path().to_path_buf(),
+            dot_git_path: temp_dir.path().to_path_buf().join(".git"),
         };
+        fs::create_dir(&config.dot_git_path)?;
         let mut git = Git { config };
         git.hash_object(&true, &tmp_file_path)?;
         let hash = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");

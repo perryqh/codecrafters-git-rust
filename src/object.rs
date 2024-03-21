@@ -71,9 +71,9 @@ impl Object<()> {
         })
     }
 
-    pub(crate) fn read(root_path: &PathBuf, hash: &str) -> anyhow::Result<Object<impl BufRead>> {
-        let f = std::fs::File::open(root_path.join(format!(
-            ".git/objects/{}/{}",
+    pub(crate) fn read(dot_git_path: &PathBuf, hash: &str) -> anyhow::Result<Object<impl BufRead>> {
+        let f = std::fs::File::open(dot_git_path.join(format!(
+            "objects/{}/{}",
             &hash[..2],
             &hash[2..]
         )))
@@ -127,21 +127,17 @@ where
         Ok(hash.into())
     }
 
-    pub(crate) fn write_to_objects(self, root_path: &PathBuf) -> anyhow::Result<[u8; 20]> {
+    pub(crate) fn write_to_objects(self, dot_git_path: &PathBuf) -> anyhow::Result<[u8; 20]> {
         let tmp = "temporary";
         let hash = self
             .write(std::fs::File::create(tmp).context("construct temporary file for tree")?)
             .context("stream tree object into tree object file")?;
         let hash_hex = hex::encode(hash);
-        fs::create_dir_all(root_path.join(format!(".git/objects/{}/", &hash_hex[..2])))
+        fs::create_dir_all(dot_git_path.join(format!("objects/{}/", &hash_hex[..2])))
             .context("create subdir of .git/objects")?;
         fs::rename(
             tmp,
-            root_path.join(format!(
-                ".git/objects/{}/{}",
-                &hash_hex[..2],
-                &hash_hex[2..]
-            )),
+            dot_git_path.join(format!("objects/{}/{}", &hash_hex[..2], &hash_hex[2..])),
         )
         .context("move tree file into .git/objects")?;
         Ok(hash)

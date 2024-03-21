@@ -17,7 +17,7 @@ pub(crate) fn build_test_git() -> anyhow::Result<TestGit> {
     let config = Config {
         writer,
         error_writer,
-        root: temp_dir.path().to_path_buf(),
+        dot_git_path: temp_dir.path().to_path_buf().join(".git"),
     };
     Ok(Git { config })
 }
@@ -39,16 +39,16 @@ pub(crate) fn write_to_git_objects(
 
     fs::create_dir_all(
         git.config
-            .root
+            .dot_git_path
             .as_path()
-            .join(".git/objects/")
+            .join("objects/")
             .join(&hash[..2]),
     )?;
     let file_path = git
         .config
-        .root
+        .dot_git_path
         .as_path()
-        .join(".git/objects/")
+        .join("objects/")
         .join(&hash[..2])
         .join(&hash[2..]);
     fs::write(&file_path, compressed_bytes).context("error writing {file_path}")?;

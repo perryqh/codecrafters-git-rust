@@ -2,7 +2,7 @@
 pub struct Config<W: std::io::Write, X: std::io::Write> {
     pub writer: W,
     pub error_writer: X,
-    pub root: std::path::PathBuf,
+    pub dot_git_path: std::path::PathBuf,
 }
 
 impl Default for Config<std::io::Stdout, std::io::Stderr> {
@@ -10,7 +10,7 @@ impl Default for Config<std::io::Stdout, std::io::Stderr> {
         Self {
             writer: std::io::stdout(),
             error_writer: std::io::stderr(),
-            root: std::env::current_dir().unwrap(),
+            dot_git_path: std::env::current_dir().unwrap().join(".git"),
         }
     }
 }

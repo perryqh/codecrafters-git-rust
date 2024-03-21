@@ -69,9 +69,9 @@ impl Display for TreeEntryMode {
     }
 }
 
-pub(crate) fn build_tree(root_path: &PathBuf, tree_hash: &str) -> anyhow::Result<Tree> {
+pub(crate) fn build_tree(dot_git_path: &PathBuf, tree_hash: &str) -> anyhow::Result<Tree> {
     let mut tree_entries = vec![];
-    let mut object = Object::read(root_path, tree_hash).context("parse out tree object file")?;
+    let mut object = Object::read(dot_git_path, tree_hash).context("parse out tree object file")?;
     match object.object_type {
         ObjectType::Tree => {
             let mut buffer = Vec::new();
@@ -135,11 +135,15 @@ mod tests {
         //   tree <size>\0
         //   <mode> <name>\0<20_byte_sha>
         //   <mode> <name>\0<20_byte_sha>
-        let e1: Vec<u8> = [b"0100644 README.md\0", &hex::decode(b"abafc304b7280dac41f0949acc30eeb6a7a70eb4")?[..]].concat();
+        let e1: Vec<u8> = [
+            b"0100644 README.md\0",
+            &hex::decode(b"abafc304b7280dac41f0949acc30eeb6a7a70eb4")?[..],
+        ]
+        .concat();
         let file_contents = b"tree 239\0100644 README.md\0abafc304b7280dac41f0949acc30eeb6a7a70eb4040000 ai-assistant\0dc521eaed6e6b7ba3513b32713539d1fe44c5a26040000 app-apis\012ce3a605dcfd1cd80cae6b1df63ed29ac44a25b040000 app-benefits-apis\018caae42a9b3147a3d9083631b5d7ca9022cbf91";
         let mut git = build_test_git()?;
         let (tree_sha, _file_path) = write_to_git_objects(&git, file_contents)?;
-        let tree = build_tree(&git.config.root, &tree_sha)?;
+        let tree = build_tree(&git.config.dot_git_path, &tree_sha)?;
         assert_eq!(tree.entries.len(), 4);
         assert_eq!(
             tree.entries[0],
