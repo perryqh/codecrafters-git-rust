@@ -66,7 +66,9 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
     pub fn ls_tree(&mut self, name_only: &bool, tree_sha: &str) -> anyhow::Result<()> {
         let tree = build_tree(&self.config.dot_git_path, tree_sha)?;
         for entry in tree.entries {
-            write!(self.config.writer, "{}", &entry.name)?;
+            if *name_only {
+                writeln!(self.config.writer, "{}", &entry.name)?;
+            }
         }
         Ok(())
     }
@@ -75,7 +77,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test::{build_test_git, write_to_git_objects};
+    use crate::test::{build_simple_app_git, build_test_git, write_to_git_objects};
     use flate2::read::ZlibDecoder;
     use std::io::{BufRead, Read, Write};
     use tempfile::tempdir;
@@ -189,6 +191,14 @@ mod tests {
 
         Ok(())
     }
-}
 
-// https://youtu.be/u0VotuGzD_w?t=5935
+    #[test]
+    fn test_ls_tree_name_only() -> anyhow::Result<()> {
+        let mut git = build_simple_app_git()?;
+        let tree_sha = "825ad6339808aa69dd0b2d487586a32fe4b6be17";
+        git.ls_tree(&true, tree_sha)?;
+        let result_string = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
+        assert_eq!(result_string, String::from(".gitignore\nCargo.toml\nsrc\n"));
+        Ok(())
+    }
+}

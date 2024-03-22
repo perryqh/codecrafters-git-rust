@@ -127,9 +127,6 @@ mod tests {
 
     #[test]
     fn test_build_tree() -> anyhow::Result<()> {
-        //   tree <size>\0
-        //   <mode> <name>\0<20_byte_sha>
-        //   <mode> <name>\0<20_byte_sha>
         let git = build_simple_app_git()?;
         let tree_sha = String::from("825ad6339808aa69dd0b2d487586a32fe4b6be17");
         let tree = build_tree(&git.config.dot_git_path, &tree_sha)?;
