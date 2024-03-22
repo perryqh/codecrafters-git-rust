@@ -22,7 +22,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
             "ref: refs/heads/master\n",
         )?;
 
-        write!(self.config.writer, "Initialized git directory\n")?;
+        writeln!(self.config.writer, "Initialized git directory")?;
         Ok(())
     }
 
@@ -43,7 +43,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         Ok(())
     }
 
-    pub fn cat_file(&mut self, pretty_print: &bool, object_hash: &str) -> anyhow::Result<()> {
+    pub fn cat_file(&mut self, _pretty_print: &bool, object_hash: &str) -> anyhow::Result<()> {
         let mut object = Object::read(&self.config.dot_git_path, object_hash)
             .context("parse out blob object file")?;
 
@@ -52,7 +52,7 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
                 let n = std::io::copy(&mut object.reader, &mut self.config.writer)
                     .context("Failed to write to stdout")?;
                 ensure!(
-                    n == object.expected_size as u64,
+                    n == object.expected_size,
                     ".git/object file was not the expected size (expected: {}, actual: {})",
                     object.expected_size,
                     n
@@ -68,6 +68,15 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         for entry in tree.entries {
             if *name_only {
                 writeln!(self.config.writer, "{}", &entry.name)?;
+            } else {
+                writeln!(
+                    self.config.writer,
+                    "{} {} {}\t{}",
+                    entry.mode,
+                    entry.tree_entry_type(),
+                    entry.sha,
+                    entry.name
+                )?;
             }
         }
         Ok(())
@@ -199,6 +208,21 @@ mod tests {
         git.ls_tree(&true, tree_sha)?;
         let result_string = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
         assert_eq!(result_string, String::from(".gitignore\nCargo.toml\nsrc\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ls_tree() -> anyhow::Result<()> {
+        let mut git = build_simple_app_git()?;
+        let tree_sha = "825ad6339808aa69dd0b2d487586a32fe4b6be17";
+        git.ls_tree(&false, tree_sha)?;
+        let actual = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
+        let expected = "100644 blob ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba	.gitignore
+100644 blob f195397afef8ad7a138507d1cf1c118d6e0d6dfc	Cargo.toml
+040000 tree 305157a396c6858705a9cb625bab219053264ee4	src
+"
+        .to_string();
+        assert_eq!(actual, expected);
         Ok(())
     }
 }

@@ -2,10 +2,10 @@ use std::{
     ffi::CStr,
     fmt::{self, Display},
     io::{BufRead, Read},
-    path::PathBuf,
+    path::Path,
 };
 
-use anyhow::{bail, ensure, Context};
+use anyhow::{bail, Context};
 
 use crate::object::{Object, ObjectType};
 
@@ -14,6 +14,15 @@ pub enum TreeEntryType {
     Blob,
     #[default]
     Tree,
+}
+
+impl Display for TreeEntryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TreeEntryType::Blob => write!(f, "blob"),
+            TreeEntryType::Tree => write!(f, "tree"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Default)]
@@ -69,7 +78,7 @@ impl Display for TreeEntryMode {
     }
 }
 
-pub(crate) fn build_tree(dot_git_path: &PathBuf, tree_hash: &str) -> anyhow::Result<Tree> {
+pub(crate) fn build_tree(dot_git_path: &Path, tree_hash: &str) -> anyhow::Result<Tree> {
     let mut tree_entries = vec![];
     let mut object = Object::read(dot_git_path, tree_hash).context("parse out tree object file")?;
     match object.object_type {
@@ -100,7 +109,7 @@ pub(crate) fn build_tree(dot_git_path: &PathBuf, tree_hash: &str) -> anyhow::Res
                     bail!("invalid tree entry line `{header}`");
                 };
 
-                let sha = hex::encode(&sha_buffer);
+                let sha = hex::encode(sha_buffer);
                 tree_entries.push(TreeEntry {
                     mode: mode.into(),
                     name: name.to_string(),

@@ -10,7 +10,6 @@ use std::fs;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::Path;
-use std::path::PathBuf;
 
 #[derive(Debug)]
 pub(crate) struct Object<R> {
@@ -71,7 +70,7 @@ impl Object<()> {
         })
     }
 
-    pub(crate) fn read(dot_git_path: &PathBuf, hash: &str) -> anyhow::Result<Object<impl BufRead>> {
+    pub(crate) fn read(dot_git_path: &Path, hash: &str) -> anyhow::Result<Object<impl BufRead>> {
         let f = std::fs::File::open(dot_git_path.join(format!(
             "objects/{}/{}",
             &hash[..2],
@@ -127,7 +126,7 @@ where
         Ok(hash.into())
     }
 
-    pub(crate) fn write_to_objects(self, dot_git_path: &PathBuf) -> anyhow::Result<[u8; 20]> {
+    pub(crate) fn write_to_objects(self, dot_git_path: &Path) -> anyhow::Result<[u8; 20]> {
         let tempfile = tempfile::NamedTempFile::new().context("create temporary file")?;
         let hash = self
             .write(&tempfile)
