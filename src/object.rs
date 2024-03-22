@@ -128,15 +128,15 @@ where
     }
 
     pub(crate) fn write_to_objects(self, dot_git_path: &PathBuf) -> anyhow::Result<[u8; 20]> {
-        let tmp = "temporary";
+        let tempfile = tempfile::NamedTempFile::new().context("create temporary file")?;
         let hash = self
-            .write(std::fs::File::create(tmp).context("construct temporary file for tree")?)
+            .write(&tempfile)
             .context("stream tree object into tree object file")?;
         let hash_hex = hex::encode(hash);
         fs::create_dir_all(dot_git_path.join(format!("objects/{}/", &hash_hex[..2])))
             .context("create subdir of .git/objects")?;
         fs::rename(
-            tmp,
+            tempfile.path(),
             dot_git_path.join(format!("objects/{}/{}", &hash_hex[..2], &hash_hex[2..])),
         )
         .context("move tree file into .git/objects")?;
