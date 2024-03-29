@@ -1,11 +1,14 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{bail, ensure, Context};
 
 use crate::{
     config::Config,
     object::{Object, ObjectType},
-    tree::build_tree,
+    tree::{build_tree, write_tree_for},
 };
 #[derive(Debug)]
 pub struct Git<W: std::io::Write, X: std::io::Write> {
@@ -81,12 +84,25 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         }
         Ok(())
     }
+
+    pub fn write_tree(&mut self) -> anyhow::Result<()> {
+        let Some(hash) = write_tree_for(&self.config.dot_git_path, Path::new("."))
+            .context("construct root tree object")?
+        else {
+            anyhow::bail!("failed to write tree");
+        };
+
+        writeln!(self.config.writer, "{}", hex::encode(hash))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test::{build_simple_app_git, build_test_git, write_to_git_objects};
+    use crate::test::{
+        build_git_from_fixture, build_simple_app_git, build_test_git, write_to_git_objects,
+    };
     use flate2::read::ZlibDecoder;
     use std::io::{BufRead, Read, Write};
     use tempfile::tempdir;
@@ -223,6 +239,14 @@ mod tests {
 "
         .to_string();
         assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_tree_with_one_file() -> anyhow::Result<()> {
+        // let mut git = build_git_from_fixture("one-file-app")?;
+        //git.write_tree()?;
+        //let actual = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
         Ok(())
     }
 }

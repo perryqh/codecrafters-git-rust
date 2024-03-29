@@ -23,12 +23,16 @@ pub(crate) fn build_test_git() -> anyhow::Result<TestGit> {
 }
 
 pub(crate) fn build_simple_app_git() -> anyhow::Result<TestGit> {
+    build_git_from_fixture("simple-app")
+}
+
+pub(crate) fn build_git_from_fixture(fixture: &str) -> anyhow::Result<TestGit> {
     let writer = Vec::new();
     let error_writer = Vec::new();
     let config = Config {
         writer,
         error_writer,
-        dot_git_path: PathBuf::from("tests/fixtures/simple-app/dot-git"),
+        dot_git_path: PathBuf::from(format!("tests/fixtures/{}/dot-git", fixture)),
     };
     Ok(Git { config })
 }

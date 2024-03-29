@@ -33,6 +33,7 @@ enum Command {
         #[clap(name = "tree-hash")]
         tree_hash: String,
     },
+    WriteTree,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -51,5 +52,6 @@ fn main() -> anyhow::Result<()> {
             name_only,
             tree_hash,
         } => git.ls_tree(&name_only, &tree_hash),
+        Command::WriteTree => git.write_tree(),
     }
 }
