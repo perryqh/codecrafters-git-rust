@@ -2,10 +2,10 @@ use std::{
     cmp::Ordering,
     ffi::CStr,
     fmt::{self, Display},
-    fs,
+    fs::{self, Metadata},
     io::{BufRead, Cursor, Read},
     os::unix::fs::PermissionsExt,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context};
@@ -49,7 +49,7 @@ impl TreeEntry {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq, Default, Clone, Copy)]
 pub enum TreeEntryMode {
     #[default]
     RegularFile,
@@ -70,6 +70,20 @@ impl From<&str> for TreeEntryMode {
     }
 }
 
+impl From<&Metadata> for TreeEntryMode {
+    fn from(meta: &Metadata) -> Self {
+        if meta.is_dir() {
+            TreeEntryMode::Directory
+        } else if meta.is_symlink() {
+            TreeEntryMode::SymbolicLink
+        } else if (meta.permissions().mode() & 0o111) != 0 {
+            TreeEntryMode::ExecutableFile
+        } else {
+            TreeEntryMode::RegularFile
+        }
+    }
+}
+
 impl Display for TreeEntryMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -79,6 +93,92 @@ impl Display for TreeEntryMode {
             TreeEntryMode::Directory => write!(f, "040000"),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct TreeEntryBytesBuilder {
+    mode: Option<TreeEntryMode>,
+    name: Option<String>,
+    path: Option<PathBuf>,
+    is_dir: Option<bool>,
+}
+
+impl TreeEntryBytesBuilder {
+    fn dir_entry(mut self, entry: &fs::DirEntry) -> Self {
+        let meta = entry.metadata().expect("metadata for directory entry");
+        self.mode = Some(TreeEntryMode::from(&meta));
+        self.name = Some(entry.file_name().to_string_lossy().to_string());
+        self.path = Some(entry.path());
+        self.is_dir = Some(meta.is_dir());
+        self
+    }
+
+    fn path(&self) -> &Path {
+        self.path.as_ref().expect("path is required")
+    }
+
+    fn is_dir(&self) -> bool {
+        self.is_dir.expect("is_dir is required")
+    }
+
+    fn is_dot_git_entry(&self, dot_git_path: &Path) -> bool {
+        self.name.as_ref().map_or(false, |name| {
+            dot_git_path
+                .file_name()
+                .and_then(|file_name| file_name.to_str())
+                .map_or(false, |file_name_str| name == file_name_str)
+        })
+    }
+
+    fn to_raw_bytes(&self, hash: [u8; 20]) -> anyhow::Result<Vec<u8>> {
+        let mode = self.mode.context("mode is required")?;
+        let mode_string = match mode {
+            TreeEntryMode::Directory => "40000".to_string(), // git doesn't use 040000
+            _ => format!("{}", mode),
+        };
+        let file_name = self.name.as_ref().context("name is required")?;
+        let mut raw_bytes = Vec::new();
+        raw_bytes.extend(mode_string.as_bytes());
+        raw_bytes.push(b' ');
+        raw_bytes.extend(file_name.as_bytes());
+        raw_bytes.push(0);
+        raw_bytes.extend(hash);
+        Ok(raw_bytes)
+    }
+}
+
+fn compare_tree_entry_bytes_builder(
+    a: &TreeEntryBytesBuilder,
+    b: &TreeEntryBytesBuilder,
+) -> Ordering {
+    let afn = a.name.as_ref().expect("name is required");
+    let afn = afn.as_bytes();
+    let bfn = b.name.as_ref().expect("name is required");
+    let bfn = bfn.as_bytes();
+    let common_len = std::cmp::min(afn.len(), bfn.len());
+    match afn[..common_len].cmp(&bfn[..common_len]) {
+        Ordering::Equal => {}
+        o => return o,
+    }
+    if afn.len() == bfn.len() {
+        return Ordering::Equal;
+    }
+    let c1 = if let Some(c) = afn.get(common_len).copied() {
+        Some(c)
+    } else if a.is_dir() {
+        Some(b'/')
+    } else {
+        None
+    };
+    let c2 = if let Some(c) = bfn.get(common_len).copied() {
+        Some(c)
+    } else if b.is_dir() {
+        Some(b'/')
+    } else {
+        None
+    };
+
+    c1.cmp(&c2)
 }
 
 pub(crate) fn build_tree(dot_git_path: &Path, tree_hash: &str) -> anyhow::Result<Tree> {
@@ -126,95 +226,38 @@ pub(crate) fn build_tree(dot_git_path: &Path, tree_hash: &str) -> anyhow::Result
         _ => bail!("object type '{}' not supported", object.object_type),
     }
 }
+
 pub(crate) fn write_tree_for(dot_git_path: &Path, path: &Path) -> anyhow::Result<Option<[u8; 20]>> {
-    dbg!(path);
-    let mut dir =
-        fs::read_dir(path).with_context(|| format!("open directory {}", path.display()))?;
+    let dir = fs::read_dir(path).with_context(|| format!("open directory {}", path.display()))?;
 
     let mut entries = Vec::new();
-    while let Some(entry) = dir.next() {
+    for entry in dir {
         let entry = entry.with_context(|| format!("bad directory entry in {}", path.display()))?;
-        let name = entry.file_name();
-        let meta = entry.metadata().context("metadata for directory entry")?;
-        entries.push((entry, name, meta));
+        let builder = TreeEntryBytesBuilder::default().dir_entry(&entry);
+        entries.push(builder);
     }
-    entries.sort_unstable_by(|a, b| {
-        // git has very specific rules for how to compare names
-        // https://github.com/git/git/blob/e09f1254c54329773904fe25d7c545a1fb4fa920/tree.c#L99
-        let afn = &a.1;
-        let afn_string = afn.to_string_lossy();
-        let afn = afn_string.as_bytes();
-        let bfn = &b.1;
-        let bfn_string = bfn.to_string_lossy();
-        let bfn = bfn_string.as_bytes();
-        let common_len = std::cmp::min(afn.len(), bfn.len());
-        match afn[..common_len].cmp(&bfn[..common_len]) {
-            Ordering::Equal => {}
-            o => return o,
-        }
-        if afn.len() == bfn.len() {
-            return Ordering::Equal;
-        }
-        let c1 = if let Some(c) = afn.get(common_len).copied() {
-            Some(c)
-        } else if a.2.is_dir() {
-            Some(b'/')
-        } else {
-            None
-        };
-        let c2 = if let Some(c) = bfn.get(common_len).copied() {
-            Some(c)
-        } else if b.2.is_dir() {
-            Some(b'/')
-        } else {
-            None
-        };
 
-        c1.cmp(&c2)
-    });
+    entries.sort_unstable_by(compare_tree_entry_bytes_builder);
+
     let mut tree_object = Vec::new();
-    for (entry, file_name, meta) in entries {
-        if file_name == dot_git_path.file_name().unwrap() {
+    for builder in entries {
+        if builder.is_dot_git_entry(dot_git_path) {
             continue;
         }
-        let mode = if meta.is_dir() {
-            "40000"
-        } else if meta.is_symlink() {
-            "120000"
-        } else if (meta.permissions().mode() & 0o111) != 0 {
-            // has at least one executable bit set
-            "100755"
-        } else {
-            "100644"
-        };
-        let path = entry.path();
-        let hash = if meta.is_dir() {
-            let Some(hash) = write_tree_for(dot_git_path, &path)? else {
+
+        let hash = if builder.is_dir() {
+            let Some(hash) = write_tree_for(dot_git_path, builder.path())? else {
                 // empty directory, so don't include in parent
                 continue;
             };
             hash
         } else {
-            let tempfile = tempfile::NamedTempFile::new().context("create temporary file")?;
-            let hash = Object::blob_from_file(&path)
+            Object::blob_from_file(&builder.path())
                 .context("open blob input file")?
-                .write(&tempfile)
-                .context("stream file into blob")?;
-            let hash_hex = hex::encode(hash);
-            fs::create_dir_all(dot_git_path.join(format!("objects/{}/", &hash_hex[..2])))
-                .context("create subdir of .git/objects")?;
-            std::fs::rename(
-                tempfile.path(),
-                dot_git_path.join(format!("objects/{}/{}", &hash_hex[..2], &hash_hex[2..])),
-            )
-            .context("move blob file into .git/objects")?;
-            hash
+                .write_to_objects(dot_git_path)
+                .context("writing to objects")?
         };
-        tree_object.extend(mode.as_bytes());
-        tree_object.push(b' ');
-        tree_object.extend(file_name.to_string_lossy().as_bytes());
-        tree_object.push(0);
-        tree_object.extend(hash);
+        tree_object.extend(builder.to_raw_bytes(hash)?);
     }
 
     if tree_object.is_empty() {
@@ -234,6 +277,10 @@ pub(crate) fn write_tree_for(dot_git_path: &Path, path: &Path) -> anyhow::Result
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
     use crate::test::build_simple_app_git;
 
     use super::*;
@@ -266,6 +313,104 @@ mod tests {
                 mode: TreeEntryMode::Directory,
                 name: String::from("src"),
                 sha: String::from("305157a396c6858705a9cb625bab219053264ee4"),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_tree_with_one_file() -> anyhow::Result<()> {
+        let tmp_dir = tempdir()?;
+        let dot_git = tmp_dir.path().join("dot-git");
+        fs::create_dir_all(dot_git.join("objects")).context("create subdir of .git/objects")?;
+        let staging_git_dir = PathBuf::from(format!("tests/fixtures/one-file-app"));
+        let result = write_tree_for(&dot_git, staging_git_dir.as_path());
+        assert!(&result.is_ok());
+        assert!(result.as_ref().unwrap().is_some());
+        let actual_sha = result?;
+        let actual_sha = actual_sha.as_ref().expect("SHA should be present");
+        let actual_sha = hex::encode(actual_sha);
+        assert_eq!(actual_sha, "5da554cc6d31c65185d6d63ae707cc1328eeb8c2");
+        assert_eq!(fs::read_dir(tmp_dir.path().join("dot-git"))?.count(), 1);
+        assert_eq!(fs::read_dir(dot_git.join("objects/"))?.count(), 2);
+        let tree = build_tree(dot_git.as_path(), &actual_sha)?;
+        assert_eq!(tree.entries.len(), 1);
+        assert_eq!(
+            tree.entries[0],
+            TreeEntry {
+                mode: TreeEntryMode::RegularFile,
+                name: String::from("foo.rs"),
+                sha: String::from("3524658cc82dda8611f51bd132493e711d50bb81"),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_tree_complex() -> anyhow::Result<()> {
+        let tmp_dir = tempdir()?;
+        let dot_git = tmp_dir.path().join("dot-git");
+        fs::create_dir_all(dot_git.join("objects")).context("create subdir of .git/objects")?;
+        let staging_git_dir = PathBuf::from(format!("tests/fixtures/complex-app"));
+        let result = write_tree_for(&dot_git, staging_git_dir.as_path());
+        assert!(&result.is_ok());
+        assert!(result.as_ref().unwrap().is_some());
+        let actual_sha = result?;
+        let actual_sha = actual_sha.as_ref().expect("SHA should be present");
+        let actual_sha = hex::encode(actual_sha);
+        assert_eq!(actual_sha, "f33421767929a06951899aa91cc699df29c3893b");
+        assert_eq!(fs::read_dir(tmp_dir.path().join("dot-git"))?.count(), 1);
+        assert_eq!(fs::read_dir(dot_git.join("objects/"))?.count(), 6);
+        let tree = build_tree(dot_git.as_path(), &actual_sha)?;
+        assert_eq!(tree.entries.len(), 1);
+        assert_eq!(
+            tree.entries[0],
+            TreeEntry {
+                mode: TreeEntryMode::Directory,
+                name: String::from("src"),
+                sha: String::from("32692fb2462bbe82c8b88e54ec5f0fec3badbe88"),
+            }
+        );
+        let tree = build_tree(
+            dot_git.as_path(),
+            "32692fb2462bbe82c8b88e54ec5f0fec3badbe88",
+        )?;
+        assert_eq!(tree.entries.len(), 2);
+        assert_eq!(
+            tree.entries[0],
+            TreeEntry {
+                mode: TreeEntryMode::RegularFile,
+                name: String::from("foo.txt"),
+                sha: String::from("1657a67183cbc4719b4818685a2f5635bf481094"),
+            }
+        );
+        assert_eq!(
+            tree.entries[1],
+            TreeEntry {
+                mode: TreeEntryMode::Directory,
+                name: String::from("foo"),
+                sha: String::from("68ab77c490a5cbdcf70a2094ce43780c5780ab4b"),
+            }
+        );
+        let tree = build_tree(
+            dot_git.as_path(),
+            "68ab77c490a5cbdcf70a2094ce43780c5780ab4b",
+        )?;
+        assert_eq!(tree.entries.len(), 2);
+        assert_eq!(
+            tree.entries[0],
+            TreeEntry {
+                mode: TreeEntryMode::RegularFile,
+                name: String::from("ab.txt"),
+                sha: String::from("4a3055de6ce49aa356dd07a1e7feeff79bd18fb8"),
+            }
+        );
+        assert_eq!(
+            tree.entries[1],
+            TreeEntry {
+                mode: TreeEntryMode::RegularFile,
+                name: String::from("bc.txt"),
+                sha: String::from("2ce489f987a7d6dbfa73a54df760cdc90e841794"),
             }
         );
         Ok(())

@@ -241,12 +241,4 @@ mod tests {
         assert_eq!(actual, expected);
         Ok(())
     }
-
-    #[test]
-    fn test_write_tree_with_one_file() -> anyhow::Result<()> {
-        // let mut git = build_git_from_fixture("one-file-app")?;
-        //git.write_tree()?;
-        //let actual = String::from_utf8(git.config.writer).expect("Found invalid UTF-8");
-        Ok(())
-    }
 }
