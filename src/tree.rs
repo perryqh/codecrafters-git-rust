@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::{
     cmp::Ordering,
     ffi::CStr,
@@ -275,6 +276,43 @@ pub(crate) fn write_tree_for(dot_git_path: &Path, path: &Path) -> anyhow::Result
     }
 }
 
+pub(crate) fn commit_tree(
+    dot_git_path: &Path,
+    message: &str,
+    tree_hash: &str,
+    parent_hash: Option<&str>,
+) -> anyhow::Result<Option<[u8; 20]>> {
+    let mut commit = String::new();
+    writeln!(commit, "tree {tree_hash}")?;
+    if let Some(parent_hash) = parent_hash {
+        writeln!(commit, "parent {parent_hash}")?;
+    }
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .context("current system time is before UNIX epoch")?;
+    writeln!(
+        commit,
+        "author Perry Hertler <perry@hertler.org> {} +0000",
+        time.as_secs()
+    )?;
+    writeln!(
+        commit,
+        "committer Perry Hertler <perry@hertler.org> {} +0000",
+        time.as_secs()
+    )?;
+    writeln!(commit, "")?;
+    writeln!(commit, "{message}")?;
+    Ok(Some(
+        Object {
+            object_type: ObjectType::Commit,
+            expected_size: commit.len() as u64,
+            reader: Cursor::new(commit),
+        }
+        .write_to_objects(dot_git_path)
+        .context("write commit object")?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -413,6 +451,35 @@ mod tests {
                 sha: String::from("2ce489f987a7d6dbfa73a54df760cdc90e841794"),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_tree_complex() -> anyhow::Result<()> {
+        let tmp_dir = tempdir()?;
+        let dot_git = tmp_dir.path().join("dot-git");
+        fs::create_dir_all(dot_git.join("objects")).context("create subdir of .git/objects")?;
+        let staging_git_dir = PathBuf::from(format!("tests/fixtures/complex-app"));
+        let result = write_tree_for(&dot_git, staging_git_dir.as_path());
+        assert!(&result.is_ok());
+        let tree_sha = hex::encode(result.unwrap().unwrap());
+        assert_eq!(tree_sha, "f33421767929a06951899aa91cc699df29c3893b");
+        assert_eq!(fs::read_dir(tmp_dir.path().join("dot-git"))?.count(), 1);
+        let result = commit_tree(&dot_git, "initial commit", &tree_sha, None)?;
+        let commit_sha = hex::encode(result.unwrap());
+        assert_eq!(commit_sha.len(), 40);
+
+        let tree = build_tree(dot_git.as_path(), &tree_sha)?;
+        assert_eq!(tree.entries.len(), 1);
+        assert_eq!(
+            tree.entries[0],
+            TreeEntry {
+                mode: TreeEntryMode::Directory,
+                name: String::from("src"),
+                sha: String::from("32692fb2462bbe82c8b88e54ec5f0fec3badbe88"),
+            }
+        );
+
         Ok(())
     }
 }

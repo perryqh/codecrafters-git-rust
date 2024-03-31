@@ -34,6 +34,13 @@ enum Command {
         tree_hash: String,
     },
     WriteTree,
+    CommitTree {
+        #[clap(short = 'm')]
+        message: String,
+        #[clap(short = 'p')]
+        parent_hash: Option<String>,
+        tree_hash: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,5 +60,10 @@ fn main() -> anyhow::Result<()> {
             tree_hash,
         } => git.ls_tree(&name_only, &tree_hash),
         Command::WriteTree => git.write_tree(),
+        Command::CommitTree {
+            message,
+            tree_hash,
+            parent_hash,
+        } => git.commit_tree(&message, &tree_hash, parent_hash),
     }
 }

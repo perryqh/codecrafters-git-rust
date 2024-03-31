@@ -8,7 +8,7 @@ use anyhow::{bail, ensure, Context};
 use crate::{
     config::Config,
     object::{Object, ObjectType},
-    tree::{build_tree, write_tree_for},
+    tree::{build_tree, commit_tree, write_tree_for},
 };
 #[derive(Debug)]
 pub struct Git<W: std::io::Write, X: std::io::Write> {
@@ -93,6 +93,26 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         };
 
         writeln!(self.config.writer, "{}", hex::encode(hash))?;
+        Ok(())
+    }
+
+    pub fn commit_tree(
+        &mut self,
+        message: &str,
+        tree_hash: &str,
+        parent_hash: Option<String>,
+    ) -> anyhow::Result<()> {
+        let hash = commit_tree(
+            &self.config.dot_git_path,
+            message,
+            tree_hash,
+            parent_hash.as_deref(),
+        )
+        .context("commit tree")?;
+        match hash {
+            Some(hash) => writeln!(self.config.writer, "{}", hex::encode(hash))?,
+            None => bail!("failed to commit tree"),
+        }
         Ok(())
     }
 }
