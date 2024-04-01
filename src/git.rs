@@ -6,6 +6,7 @@ use std::{
 use anyhow::{bail, ensure, Context};
 
 use crate::{
+    commit::commit,
     config::Config,
     object::{Object, ObjectType},
     tree::{build_tree, commit_tree, write_tree_for},
@@ -112,6 +113,15 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         match hash {
             Some(hash) => writeln!(self.config.writer, "{}", hex::encode(hash))?,
             None => bail!("failed to commit tree"),
+        }
+        Ok(())
+    }
+
+    pub fn commit(&mut self, message: &str) -> anyhow::Result<()> {
+        let hash = commit(&self.config.dot_git_path, Path::new("."), message).context("commit")?;
+        match hash {
+            Some(hash) => writeln!(self.config.writer, "{}", hex::encode(hash))?,
+            None => bail!("failed to commit"),
         }
         Ok(())
     }

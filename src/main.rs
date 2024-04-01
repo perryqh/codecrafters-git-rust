@@ -41,6 +41,10 @@ enum Command {
         parent_hash: Option<String>,
         tree_hash: String,
     },
+    Commit {
+        #[clap(short = 'm')]
+        message: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,5 +69,6 @@ fn main() -> anyhow::Result<()> {
             tree_hash,
             parent_hash,
         } => git.commit_tree(&message, &tree_hash, parent_hash),
+        Command::Commit { message } => git.commit(&message),
     }
 }
