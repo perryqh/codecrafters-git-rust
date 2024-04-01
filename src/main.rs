@@ -45,6 +45,10 @@ enum Command {
         #[clap(short = 'm')]
         message: String,
     },
+    Clone {
+        #[clap(name = "repo-url")]
+        repo_url: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -70,5 +74,6 @@ fn main() -> anyhow::Result<()> {
             parent_hash,
         } => git.commit_tree(&message, &tree_hash, parent_hash),
         Command::Commit { message } => git.commit(&message),
+        Command::Clone { repo_url } => git.clone(&repo_url),
     }
 }

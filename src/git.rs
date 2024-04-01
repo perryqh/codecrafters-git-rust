@@ -125,6 +125,10 @@ impl<W: std::io::Write, X: std::io::Write> Git<W, X> {
         }
         Ok(())
     }
+
+    pub fn clone(&mut self, repo_url: &str) -> anyhow::Result<()> {
+        todo!("clone"); // https://stefan.saasen.me/articles/git-clone-in-haskell-from-the-bottom-up/#format_of_the_delta_representation
+    }
 }
 
 #[cfg(test)]
